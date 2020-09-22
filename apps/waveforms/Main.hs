@@ -86,6 +86,12 @@ square t = switch on cont
     cont True = switch on cont
     cont False = switch off cont
 
+sinewave :: SF a Double
+sinewave = proc _ -> do
+  let freq = 1
+  phi <- integral -< 2 * pi * freq
+  returnA -< sin phi
+
 ------------
 --- Main ---
 ------------
@@ -100,5 +106,5 @@ main = reactimate (return NoEvent) produceInput handleOutput pipeline
       handleOutput :: Bool -> Double -> IO Bool
       handleOutput _ y = print y >> pure False
       pipeline :: SF a Double
-      pipeline = square 10
+      pipeline = sinewave
 
