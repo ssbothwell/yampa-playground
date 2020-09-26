@@ -19,17 +19,17 @@ import SDL (Window, Renderer, Point(..), V4(..), V2(..), WindowConfig(..), ($=))
 
 import Foreign.C.Types
 
-arrowApply :: (Functor (a b), Arrow a) => ((c, c) -> d) -> a b c -> a b c -> a b d
-arrowApply f x y = fmap f $ x &&& y
-
-addS :: SF a Double -> SF a Double -> SF a Double
-addS = arrowApply (uncurry (+))
-
 zero :: SF a Double
 zero = constant 0
 
 one :: SF a Double
 one = constant 1
+
+sinewave :: SF a Double
+sinewave = proc input -> do
+  let freq = 1
+  phi <- integral -< 2 * pi * freq
+  returnA -< sin phi
 
 squarewave :: SF a Double
 squarewave = sinewave >>^ signum
@@ -44,25 +44,22 @@ trianglewave = proc _ -> do
   phi <- integral -< 2 * pi
   returnA -< asin $ sin phi
 
-sinewave :: SF a Double
-sinewave = proc input -> do
-  let freq = 0.5
-  phi <- integral -< 2 * pi * freq
-  returnA -< sin phi
-
 scope :: SF (DTime, Double) (Event (Vector (Point V2 CInt)))
-scope = bias >>> modulo >>> scaleX *** scaleY >>> sampleWindow 10 0.1 >>> toFloor >>> toPoints >>> toVector
+scope = bias >>> modulo >>> scaleX *** scaleY >>> sampleWindow samples interval >>> toFloor >>> toPoints >>> toVector
   where
+    samples :: Int
     samples = 10
+
+    interval = 1 / fromIntegral samples
 
     bias :: SF (Double, Double) (Double, Double)
     bias = second $ arr (+1)
 
     modulo :: SF (Double, Double) (Double, Double)
-    modulo = FRP.Yampa.first $ arr $ \t -> t - fromIntegral (floor (t / samples)) * samples
+    modulo = FRP.Yampa.first $ arr $ \t -> t - fromIntegral (floor (t / fromIntegral samples)) * fromIntegral samples
 
     scaleX :: SF Double Double
-    scaleX = arr (* (windowW / samples))
+    scaleX = arr (* (windowW / fromIntegral samples))
 
     scaleY :: SF Double Double
     scaleY = arr (* (windowH / 2))
@@ -75,6 +72,12 @@ scope = bias >>> modulo >>> scaleX *** scaleY >>> sampleWindow 10 0.1 >>> toFloo
 
     toVector :: SF (Event [Point V2 CInt]) (Event (Vector (Point V2 CInt)))
     toVector = arr $ fmap fromList
+
+arrowApply :: (Functor (a b), Arrow a) => ((c, c) -> d) -> a b c -> a b c -> a b d
+arrowApply f x y = fmap f $ x &&& y
+
+addS :: SF a Double -> SF a Double -> SF a Double
+addS = arrowApply (uncurry (+))
 
 -------------------
 --- Interaction ---
@@ -186,6 +189,7 @@ main = do
       produceInput :: Bool -> IO (DTime, Maybe (Event SDL.EventPayload))
       produceInput _ = do
         let sampleRate = 0.1
+        threadDelay 30000
         mevent <- SDL.pollEvent
         case mevent of
           Just e -> return (sampleRate, Just . Event $ SDL.eventPayload e)
