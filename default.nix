@@ -1,5 +1,5 @@
 { mkDerivation, base, extra, lens, random, sdl2, sdl2-ttf, stdenv
-, Yampa
+, vector, Yampa
 }:
 mkDerivation {
   pname = "yampa-playground";
@@ -8,7 +8,7 @@ mkDerivation {
   isLibrary = false;
   isExecutable = true;
   executableHaskellDepends = [
-    base extra lens random sdl2 sdl2-ttf Yampa
+    base extra lens random sdl2 sdl2-ttf vector Yampa
   ];
   license = "unknown";
   hydraPlatforms = stdenv.lib.platforms.none;
