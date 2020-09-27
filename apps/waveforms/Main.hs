@@ -5,6 +5,7 @@
 {-# LANGUAGE Arrows #-}
 module Main where
 
+import Control.Monad
 import Data.Bifunctor hiding (second)
 import Data.Ratio
 import Data.Monoid
@@ -12,10 +13,11 @@ import Data.Vector.Storable (Vector(..), fromList, toList)
 import Control.Applicative
 import Control.Concurrent
 import FRP.Yampa
-import FRP.Yampa.EventS (sampleWindow)
+import FRP.Yampa.EventS (sampleWindow, sample)
 
 import qualified SDL
 import SDL (Window, Renderer, Point(..), V4(..), V2(..), WindowConfig(..), ($=))
+import SDL.Video.Renderer (Rectangle(..))
 
 import Foreign.C.Types
 
@@ -28,11 +30,16 @@ one = constant 1
 sinewave :: SF a Double
 sinewave = proc input -> do
   let freq = 1
+      phase = 0
+      amplitude = 0.6
   phi <- integral -< 2 * pi * freq
-  returnA -< sin phi
+  returnA -< amplitude * sin (phi + phase)
 
 squarewave :: SF a Double
 squarewave = sinewave >>^ signum
+
+--trianglewave' :: SF a Double
+--trianglewave' = sinewave >>^ asin
 
 sawtoothwave :: SF a Double
 sawtoothwave = proc _ -> do
@@ -41,28 +48,31 @@ sawtoothwave = proc _ -> do
 
 trianglewave :: SF a Double
 trianglewave = proc _ -> do
-  phi <- integral -< 2 * pi
-  returnA -< asin $ sin phi
+  let freq = 1
+      phase = 2.5
+      amplitude = 0.6
+  phi <- integral -< 2 * pi * freq
+  returnA -< amplitude * asin (sin $ phi + phase)
 
 scope :: SF (DTime, Double) (Event (Vector (Point V2 CInt)))
-scope = bias >>> modulo >>> scaleX *** scaleY >>> sampleWindow samples interval >>> toFloor >>> toPoints >>> toVector
+scope = scaleX *** scaleY >>> bias >>> modulo >>> sampleWindow samples interval >>> toFloor >>> toPoints >>> toVector
   where
     samples :: Int
-    samples = 10
+    samples = 1000
 
     interval = 1 / fromIntegral samples
 
     bias :: SF (Double, Double) (Double, Double)
-    bias = second $ arr (+1)
+    bias = second $ arr (+ (windowH / 2))
 
     modulo :: SF (Double, Double) (Double, Double)
-    modulo = FRP.Yampa.first $ arr $ \t -> t - fromIntegral (floor (t / fromIntegral samples)) * fromIntegral samples
+    modulo = FRP.Yampa.first $ arr $ \t -> t - fromIntegral (floor (t / windowW)) * windowW
 
     scaleX :: SF Double Double
-    scaleX = arr (* (windowW / fromIntegral samples))
+    scaleX = arr (* (windowW))
 
     scaleY :: SF Double Double
-    scaleY = arr (* (windowH / 2))
+    scaleY = arr (* ((windowH / 2) - 20))
 
     toFloor :: SF (Event [(DTime, Double)]) (Event [(CInt, CInt)])
     toFloor = arr $ (fmap . fmap) (bimap floor floor)
@@ -115,10 +125,6 @@ quitTrigger = proc input -> do
   qButtonTap <- keyPressed SDL.ScancodeQ -< input
   returnA -< qButtonTap
 
------------------
---- Rendering ---
------------------
-
 -----------
 --- SDL ---
 -----------
@@ -127,10 +133,10 @@ data Color = Red | Yellow | Green | Blue | BabyBlue | White | Brown | Black
   deriving Show
 
 windowW :: Num a => a
-windowW = 1000
+windowW = 400 * 2
 
 windowH :: Num a => a
-windowH = 500
+windowH = 300 * 2
 
 window :: WindowConfig
 window = SDL.defaultWindow { windowInitialSize = V2 windowW windowH }
@@ -160,11 +166,23 @@ setDrawColor renderer color =
 drawBackground :: Renderer -> Color -> IO ()
 drawBackground renderer color = setDrawColor renderer color >> SDL.clear renderer
 
-draw :: Renderer -> Vector (Point V2 CInt) -> IO ()
-draw renderer points = do
+drawLines :: Renderer -> Vector (Point V2 CInt) -> IO ()
+drawLines renderer points = do
+  let rects = fromList $ flip Rectangle (V2 10 10) <$> toList points
   clearFrame renderer
   setDrawColor renderer Red
-  SDL.drawLines renderer points
+  --SDL.drawLines renderer points
+  SDL.fillRects renderer rects
+  SDL.present renderer
+
+drawPoint :: Renderer -> (Double, Double) -> IO ()
+drawPoint renderer (x, y) = do
+  let pos = P $ floor <$> V2 x y
+  --clearFrame renderer
+  --when (x <= 9) (clearFrame renderer)
+  setDrawColor renderer Red
+  --SDL.drawPoint renderer pos
+  SDL.fillRect renderer $ Just $ Rectangle pos (V2 10 10)
   SDL.present renderer
 
 initSDL :: IO (Renderer, Window)
@@ -188,8 +206,7 @@ main = do
     where
       produceInput :: Bool -> IO (DTime, Maybe (Event SDL.EventPayload))
       produceInput _ = do
-        let sampleRate = 0.1
-        threadDelay 30000
+        let sampleRate = 0.0001
         mevent <- SDL.pollEvent
         case mevent of
           Just e -> return (sampleRate, Just . Event $ SDL.eventPayload e)
@@ -198,9 +215,8 @@ main = do
       handleOutput :: Renderer -> Bool -> (Event (Vector (Point V2 CInt)), Bool) -> IO Bool
       handleOutput r _ (e, exitBool) =
         case e of
-          Event pts -> draw r pts >> print (toList pts) >> pure exitBool
+          Event pts -> drawLines r pts >> print (toList pts) >> pure exitBool
           NoEvent -> pure exitBool
 
       pipeline :: SF (Event SDL.EventPayload) (Event (Vector (Point V2 CInt)), Bool)
       pipeline = parseSDLInput >>> ((time &&& sinewave) >>> scope) &&& shouldExit
-
