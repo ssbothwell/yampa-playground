@@ -1,3 +1,4 @@
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -fno-warn-type-defaults #-}
 {-# LANGUAGE DataKinds #-}
@@ -60,19 +61,14 @@ trianglewave = proc _ -> do
   returnA -< amplitude * asin (sin $ phi + phase)
 
 scope :: Scope -> SF (DTime, Double) (Scope, Event [Point V2 CInt])
-scope scope' =
-  constant scope' &&& (scaleX *** scaleY >>>
-                      invert >>>
-                      bias >>>
-                      modulo >>>
-                      sampleWindow samples interval >>>
-                      toFloor >>>
-                      toPoints)
+scope s@Scope{ amplitudeBase, timeBase } =
+  constant s &&&
+  (scaleX *** scaleY >>> invert >>> bias >>> modulo >>> sampleWindow samples interval >>> toFloor >>> toPoints)
   where
     samples :: Int
     samples = 1000
 
-    interval = 1 / fromIntegral samples
+    interval = fromIntegral timeBase / fromIntegral samples
 
     bias :: SF (Double, Double) (Double, Double)
     bias = second $ arr (+ (windowH / 2))
@@ -81,10 +77,10 @@ scope scope' =
     modulo = FRP.Yampa.first $ arr $ \t -> t - fromIntegral (floor (t / windowW)) * windowW
 
     scaleX :: SF Double Double
-    scaleX = arr (* windowW)
+    scaleX = arr (* (windowW / fromIntegral timeBase))
 
     scaleY :: SF Double Double
-    scaleY = arr (* (windowH / 2))
+    scaleY = arr (* ((windowH / (fromIntegral amplitudeBase / 2)) / 2))
 
     toFloor :: SF (Event [(DTime, Double)]) (Event [(CInt, CInt)])
     toFloor = arr $ (fmap . fmap) (bimap floor floor)
@@ -249,18 +245,18 @@ type TimeBase     = CInt
 type TimeInterval = Double
 
 data Scope = Scope
-  { _amplitudeBase     :: AmpBase
-  , _amplitudeInterval :: AmpInterval
-  , _timeBase          :: TimeBase
-  , _timeInterval      :: TimeInterval
+  { amplitudeBase     :: AmpBase
+  , amplitudeInterval :: AmpInterval
+  , timeBase          :: TimeBase
+  , timeInterval      :: TimeInterval
   }
 
 scopeConfig :: Scope
 scopeConfig = Scope
-  { _amplitudeBase = 2
-  , _amplitudeInterval = 0.1
-  , _timeBase = 1
-  , _timeInterval = 0.1
+  { amplitudeBase = 4
+  , amplitudeInterval = 0.1
+  , timeBase = 2
+  , timeInterval = 0.1
   }
 
 
