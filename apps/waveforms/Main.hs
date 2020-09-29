@@ -1,3 +1,4 @@
+{-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -fno-warn-type-defaults #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -8,6 +9,7 @@ module Main where
 import Control.Monad
 import Data.Bifunctor hiding (second)
 import Data.Ratio
+import Data.List (unfoldr)
 import Data.Monoid
 import Data.Vector.Storable (Vector(..), fromList, toList)
 import Control.Applicative
@@ -31,7 +33,7 @@ sinewave :: SF a Double
 sinewave = proc input -> do
   let freq = 1
       phase = 0
-      amplitude = 0.6
+      amplitude = 1
   phi <- integral -< 2 * pi * freq
   returnA -< amplitude * sin (phi + phase)
 
@@ -43,19 +45,29 @@ squarewave = sinewave >>^ signum
 
 sawtoothwave :: SF a Double
 sawtoothwave = proc _ -> do
+  let freq = 2
+      phase = 0
+      amplitude = 0.5
   t <- time -< ()
-  returnA -< t - fromIntegral (floor t)
+  returnA -< ((t * freq) - fromIntegral (floor (t * freq))) * amplitude
 
 trianglewave :: SF a Double
 trianglewave = proc _ -> do
   let freq = 1
-      phase = 2.5
-      amplitude = 0.6
+      phase = 0
+      amplitude = 0.63
   phi <- integral -< 2 * pi * freq
   returnA -< amplitude * asin (sin $ phi + phase)
 
-scope :: SF (DTime, Double) (Event (Vector (Point V2 CInt)))
-scope = scaleX *** scaleY >>> bias >>> modulo >>> sampleWindow samples interval >>> toFloor >>> toPoints >>> toVector
+scope :: Scope -> SF (DTime, Double) (Scope, Event [Point V2 CInt])
+scope scope' =
+  constant scope' &&& (scaleX *** scaleY >>>
+                      invert >>>
+                      bias >>>
+                      modulo >>>
+                      sampleWindow samples interval >>>
+                      toFloor >>>
+                      toPoints)
   where
     samples :: Int
     samples = 1000
@@ -69,10 +81,10 @@ scope = scaleX *** scaleY >>> bias >>> modulo >>> sampleWindow samples interval 
     modulo = FRP.Yampa.first $ arr $ \t -> t - fromIntegral (floor (t / windowW)) * windowW
 
     scaleX :: SF Double Double
-    scaleX = arr (* (windowW))
+    scaleX = arr (* windowW)
 
     scaleY :: SF Double Double
-    scaleY = arr (* ((windowH / 2) - 20))
+    scaleY = arr (* (windowH / 2))
 
     toFloor :: SF (Event [(DTime, Double)]) (Event [(CInt, CInt)])
     toFloor = arr $ (fmap . fmap) (bimap floor floor)
@@ -80,8 +92,8 @@ scope = scaleX *** scaleY >>> bias >>> modulo >>> sampleWindow samples interval 
     toPoints :: SF (Event [(CInt, CInt)]) (Event [Point V2 CInt])
     toPoints = arr $ (fmap . fmap) (\(x, y) -> P $ V2 x y)
 
-    toVector :: SF (Event [Point V2 CInt]) (Event (Vector (Point V2 CInt)))
-    toVector = arr $ fmap fromList
+    invert :: SF (Double, Double) (Double, Double)
+    invert = second $ arr $ \x -> if x == 0 then x else -x
 
 arrowApply :: (Functor (a b), Arrow a) => ((c, c) -> d) -> a b c -> a b c -> a b d
 arrowApply f x y = fmap f $ x &&& y
@@ -166,13 +178,48 @@ setDrawColor renderer color =
 drawBackground :: Renderer -> Color -> IO ()
 drawBackground renderer color = setDrawColor renderer color >> SDL.clear renderer
 
-drawLines :: Renderer -> Vector (Point V2 CInt) -> IO ()
+pair :: [a] -> [(a, a)]
+pair = unfoldr f
+  where
+    f :: [a] -> Maybe ((a, a), [a])
+    f (x:y:xs) = Just ((x, y), xs)
+    f _ = Nothing
+
+-- 1cps 10divs 0.1s/div
+drawTimeDivisons :: Renderer -> TimeBase -> TimeInterval -> IO ()
+drawTimeDivisons r tb ti =
+  let numDivisions = fromIntegral tb / ti
+      divisions = [(P $ V2 t 0, P $ V2 t windowH) | t <- floor . (* windowW) <$> [ti, ti * 2 .. numDivisions]]
+
+  in setDrawColor r White >>
+     mapM_ (uncurry $ SDL.drawLine r) divisions
+
+
+drawAmplitudeDivisions :: Renderer -> AmpBase -> AmpInterval -> IO ()
+drawAmplitudeDivisions r ab ai =
+  let numDivisions = fromIntegral ab / ai
+      divisions = [(P $ V2 0 a, P $ V2 windowW a) | a <- floor . (* windowH) <$> [ai, ai * 2 .. numDivisions]]
+
+  in setDrawColor r White >>
+     mapM_ (uncurry $ SDL.drawLine r) divisions
+
+drawScope :: Renderer -> [Point V2 CInt] -> IO ()
+drawScope r pts =
+  let f :: (Point V2 CInt, Point V2 CInt) -> IO ()
+      f (a@(P (V2 x _)), b@(P (V2 x' _))) =
+        if abs (x - x') >= floor (windowH / 2)
+        then pure ()
+        else SDL.drawLine r a b
+  in mapM_ f $ pair pts
+
+drawLines :: Renderer -> [Point V2 CInt] -> IO ()
 drawLines renderer points = do
-  let rects = fromList $ flip Rectangle (V2 10 10) <$> toList points
+  let rects = fromList $ flip Rectangle (V2 10 10) <$> points
   clearFrame renderer
+  drawTimeDivisons renderer 1 0.1
+  drawAmplitudeDivisions renderer 1 0.1
   setDrawColor renderer Red
-  --SDL.drawLines renderer points
-  SDL.fillRects renderer rects
+  drawScope renderer points
   SDL.present renderer
 
 drawPoint :: Renderer -> (Double, Double) -> IO ()
@@ -196,6 +243,27 @@ initSDL = do
 --- Main ---
 ------------
 
+type AmpBase      = CInt
+type AmpInterval  = Double
+type TimeBase     = CInt
+type TimeInterval = Double
+
+data Scope = Scope
+  { _amplitudeBase     :: AmpBase
+  , _amplitudeInterval :: AmpInterval
+  , _timeBase          :: TimeBase
+  , _timeInterval      :: TimeInterval
+  }
+
+scopeConfig :: Scope
+scopeConfig = Scope
+  { _amplitudeBase = 2
+  , _amplitudeInterval = 0.1
+  , _timeBase = 1
+  , _timeInterval = 0.1
+  }
+
+
 main :: IO ()
 main = do
   (renderer, window') <- initSDL
@@ -212,11 +280,11 @@ main = do
           Just e -> return (sampleRate, Just . Event $ SDL.eventPayload e)
           Nothing -> return (sampleRate, Nothing)
 
-      handleOutput :: Renderer -> Bool -> (Event (Vector (Point V2 CInt)), Bool) -> IO Bool
-      handleOutput r _ (e, exitBool) =
+      handleOutput :: Renderer -> Bool -> ((Scope, Event [Point V2 CInt]), Bool) -> IO Bool
+      handleOutput r _ ((s, e), exitBool) =
         case e of
-          Event pts -> drawLines r pts >> print (toList pts) >> pure exitBool
+          Event pts -> drawLines r pts >> pure exitBool
           NoEvent -> pure exitBool
 
-      pipeline :: SF (Event SDL.EventPayload) (Event (Vector (Point V2 CInt)), Bool)
-      pipeline = parseSDLInput >>> ((time &&& sinewave) >>> scope) &&& shouldExit
+      pipeline :: SF (Event SDL.EventPayload) ((Scope, Event [Point V2 CInt]), Bool)
+      pipeline = parseSDLInput >>> ((time &&& sinewave) >>> scope scopeConfig) &&& shouldExit
