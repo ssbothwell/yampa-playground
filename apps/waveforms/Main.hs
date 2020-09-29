@@ -21,7 +21,7 @@ import FRP.Yampa.EventS (sampleWindow, sample)
 import qualified SDL
 import SDL (Window, Renderer, Point(..), V4(..), V2(..), WindowConfig(..), ($=))
 import SDL.Video.Renderer (Rectangle(..))
-import qualified SDL.Font as F
+--import qualified SDL.Font as F
 
 import Foreign.C.Types
 
