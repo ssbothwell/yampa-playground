@@ -21,6 +21,7 @@ import FRP.Yampa.EventS (sampleWindow, sample)
 import qualified SDL
 import SDL (Window, Renderer, Point(..), V4(..), V2(..), WindowConfig(..), ($=))
 import SDL.Video.Renderer (Rectangle(..))
+import qualified SDL.Font as F
 
 import Foreign.C.Types
 
@@ -137,7 +138,7 @@ quitTrigger = proc input -> do
 --- SDL ---
 -----------
 
-data Color = Red | Yellow | Green | Blue | BabyBlue | White | Brown | Black
+data Color = Red | Yellow | Green | Blue | BabyBlue | White | Brown | Black | Grey
   deriving Show
 
 windowW :: Num a => a
@@ -156,7 +157,7 @@ renderObject r (rect, color) = do
 
 clearFrame :: Renderer -> IO ()
 clearFrame renderer = do
-  setDrawColor renderer Black
+  setDrawColor renderer White
   SDL.clear renderer
 
 setDrawColor :: Renderer -> Color -> IO ()
@@ -166,6 +167,7 @@ setDrawColor renderer color =
     Blue     -> SDL.rendererDrawColor renderer $= V4 0 0 255 0
     BabyBlue -> SDL.rendererDrawColor renderer $= V4 0 235 255 0
     Green    -> SDL.rendererDrawColor renderer $= V4 120 200 15 0
+    Grey     -> SDL.rendererDrawColor renderer $= V4 191 191 191 191
     White    -> SDL.rendererDrawColor renderer $= V4 255 255 255 255
     Black    -> SDL.rendererDrawColor renderer $= V4 0 0 0 0
     Brown    -> SDL.rendererDrawColor renderer $= V4 150 90 25 0
@@ -187,7 +189,7 @@ drawTimeDivisons r tb ti =
   let numDivisions = fromIntegral tb / ti
       divisions = [(P $ V2 t 0, P $ V2 t windowH) | t <- floor . (* windowW) <$> [ti, ti * 2 .. numDivisions]]
 
-  in setDrawColor r White >>
+  in setDrawColor r Grey >>
      mapM_ (uncurry $ SDL.drawLine r) divisions
 
 
@@ -196,11 +198,11 @@ drawAmplitudeDivisions r ab ai =
   let numDivisions = fromIntegral ab / ai
       divisions = [(P $ V2 0 a, P $ V2 windowW a) | a <- floor . (* windowH) <$> [ai, ai * 2 .. numDivisions]]
 
-  in setDrawColor r White >>
+  in setDrawColor r Grey >>
      mapM_ (uncurry $ SDL.drawLine r) divisions
 
-drawScope :: Renderer -> [Point V2 CInt] -> IO ()
-drawScope r pts =
+drawSignal :: Renderer -> [Point V2 CInt] -> IO ()
+drawSignal r pts =
   let f :: (Point V2 CInt, Point V2 CInt) -> IO ()
       f (a@(P (V2 x _)), b@(P (V2 x' _))) =
         if abs (x - x') >= floor (windowH / 2)
@@ -208,14 +210,13 @@ drawScope r pts =
         else SDL.drawLine r a b
   in mapM_ f $ pair pts
 
-drawLines :: Renderer -> [Point V2 CInt] -> IO ()
-drawLines renderer points = do
-  let rects = fromList $ flip Rectangle (V2 10 10) <$> points
+drawLines :: Renderer -> Scope -> [Point V2 CInt] -> IO ()
+drawLines renderer Scope{ amplitudeBase, amplitudeInterval, timeBase, timeInterval } points = do
   clearFrame renderer
-  drawTimeDivisons renderer 1 0.1
-  drawAmplitudeDivisions renderer 1 0.1
+  drawTimeDivisons renderer timeBase timeInterval
+  drawAmplitudeDivisions renderer amplitudeBase amplitudeInterval
   setDrawColor renderer Red
-  drawScope renderer points
+  drawSignal renderer points
   SDL.present renderer
 
 drawPoint :: Renderer -> (Double, Double) -> IO ()
@@ -249,14 +250,18 @@ data Scope = Scope
   , amplitudeInterval :: AmpInterval
   , timeBase          :: TimeBase
   , timeInterval      :: TimeInterval
+  , positivePeak      :: Maybe Double
+  , negativePeak      :: Maybe Double
   }
 
 scopeConfig :: Scope
 scopeConfig = Scope
-  { amplitudeBase = 4
+  { amplitudeBase = 8
   , amplitudeInterval = 0.1
-  , timeBase = 2
+  , timeBase = 4
   , timeInterval = 0.1
+  , positivePeak = Nothing
+  , negativePeak = Nothing
   }
 
 
@@ -279,7 +284,7 @@ main = do
       handleOutput :: Renderer -> Bool -> ((Scope, Event [Point V2 CInt]), Bool) -> IO Bool
       handleOutput r _ ((s, e), exitBool) =
         case e of
-          Event pts -> drawLines r pts >> pure exitBool
+          Event pts -> drawLines r s pts >> pure exitBool
           NoEvent -> pure exitBool
 
       pipeline :: SF (Event SDL.EventPayload) ((Scope, Event [Point V2 CInt]), Bool)
