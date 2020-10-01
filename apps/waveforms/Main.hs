@@ -12,6 +12,8 @@ import Data.Bifunctor hiding (second)
 import Data.Ratio
 import Data.List (unfoldr)
 import Data.Monoid
+import qualified Data.Text as T
+import Data.Text (Text)
 import Data.Vector.Storable (Vector(..), fromList, toList)
 import Control.Applicative
 import Control.Concurrent
@@ -19,9 +21,10 @@ import FRP.Yampa
 import FRP.Yampa.EventS (sampleWindow, sample)
 
 import qualified SDL
-import SDL (Window, Renderer, Point(..), V4(..), V2(..), WindowConfig(..), ($=))
+import SDL (Window, Renderer, Texture, Point(..), V4(..), V2(..), WindowConfig(..), ($=))
 import SDL.Video.Renderer (Rectangle(..))
---import qualified SDL.Font as F
+import qualified SDL.Font
+import SDL.Raw.Video (renderCopy)
 
 import Foreign.C.Types
 
@@ -160,6 +163,24 @@ clearFrame renderer = do
   setDrawColor renderer White
   SDL.clear renderer
 
+red :: SDL.Font.Color
+red = SDL.V4 255 0 0 0
+
+type Size = Int
+type Position = (Int, Int)
+drawText :: Renderer -> Size -> Position -> Text -> IO ()
+drawText r size (xpos, ypos) t = do
+  font <- SDL.Font.load "Anonymous.ttf" 70
+  text <- SDL.Font.blended font red t
+  SDL.Font.free font
+  texture <- SDL.createTextureFromSurface r text
+  SDL.freeSurface text
+  let width = fromIntegral $ size * T.length t
+      height = fromIntegral $ size * 2
+      xpos' = fromIntegral xpos
+      ypos' = fromIntegral ypos
+  SDL.copy r texture Nothing (Just $ Rectangle (P $ V2 xpos' ypos') (V2 width height))
+
 setDrawColor :: Renderer -> Color -> IO ()
 setDrawColor renderer color =
   case color of
@@ -192,7 +213,6 @@ drawTimeDivisons r tb ti =
   in setDrawColor r Grey >>
      mapM_ (uncurry $ SDL.drawLine r) divisions
 
-
 drawAmplitudeDivisions :: Renderer -> AmpBase -> AmpInterval -> IO ()
 drawAmplitudeDivisions r ab ai =
   let numDivisions = fromIntegral ab / ai
@@ -210,28 +230,21 @@ drawSignal r pts =
         else SDL.drawLine r a b
   in mapM_ f $ pair pts
 
-drawLines :: Renderer -> Scope -> [Point V2 CInt] -> IO ()
-drawLines renderer Scope{ amplitudeBase, amplitudeInterval, timeBase, timeInterval } points = do
-  clearFrame renderer
-  drawTimeDivisons renderer timeBase timeInterval
-  drawAmplitudeDivisions renderer amplitudeBase amplitudeInterval
-  setDrawColor renderer Red
-  drawSignal renderer points
-  SDL.present renderer
-
-drawPoint :: Renderer -> (Double, Double) -> IO ()
-drawPoint renderer (x, y) = do
-  let pos = P $ floor <$> V2 x y
-  --clearFrame renderer
-  --when (x <= 9) (clearFrame renderer)
-  setDrawColor renderer Red
-  --SDL.drawPoint renderer pos
-  SDL.fillRect renderer $ Just $ Rectangle pos (V2 10 10)
-  SDL.present renderer
+drawLines :: (Window, Renderer) -> Scope -> [Point V2 CInt] -> IO ()
+drawLines (w, r) Scope{ amplitudeBase, amplitudeInterval, timeBase, timeInterval } points = do
+  clearFrame r
+  drawTimeDivisons r timeBase timeInterval
+  drawAmplitudeDivisions r amplitudeBase amplitudeInterval
+  setDrawColor r Red
+  drawText r 20 (0, 520) $ T.concat ["amp  base: ", (T.pack . show) amplitudeBase, "v"]
+  drawText r 20 (0, 560) $ T.concat ["time base: ", (T.pack . show) timeBase, "s"]
+  drawSignal r points
+  SDL.present r
 
 initSDL :: IO (Renderer, Window)
 initSDL = do
   SDL.initializeAll
+  SDL.Font.initialize
   window' <- SDL.createWindow "My Window" window
   renderer <- SDL.createRenderer window' 0 SDL.defaultRenderer
   return (renderer, window')
@@ -256,7 +269,7 @@ data Scope = Scope
 
 scopeConfig :: Scope
 scopeConfig = Scope
-  { amplitudeBase = 8
+  { amplitudeBase = 4
   , amplitudeInterval = 0.1
   , timeBase = 4
   , timeInterval = 0.1
@@ -267,10 +280,10 @@ scopeConfig = Scope
 
 main :: IO ()
 main = do
-  (renderer, window') <- initSDL
-  reactimate (return NoEvent) produceInput (handleOutput renderer) pipeline
-  SDL.destroyRenderer renderer
-  SDL.destroyWindow window'
+  (r, w) <- initSDL
+  reactimate (return NoEvent) produceInput (handleOutput (w, r)) pipeline
+  SDL.destroyRenderer r
+  SDL.destroyWindow w
   SDL.quit
     where
       produceInput :: Bool -> IO (DTime, Maybe (Event SDL.EventPayload))
@@ -281,10 +294,10 @@ main = do
           Just e -> return (sampleRate, Just . Event $ SDL.eventPayload e)
           Nothing -> return (sampleRate, Nothing)
 
-      handleOutput :: Renderer -> Bool -> ((Scope, Event [Point V2 CInt]), Bool) -> IO Bool
-      handleOutput r _ ((s, e), exitBool) =
+      handleOutput :: (Window, Renderer) -> Bool -> ((Scope, Event [Point V2 CInt]), Bool) -> IO Bool
+      handleOutput (w, r) _ ((s, e), exitBool) =
         case e of
-          Event pts -> drawLines r s pts >> pure exitBool
+          Event pts -> drawLines (w, r) s pts >> pure exitBool
           NoEvent -> pure exitBool
 
       pipeline :: SF (Event SDL.EventPayload) ((Scope, Event [Point V2 CInt]), Bool)

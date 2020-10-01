@@ -37,8 +37,7 @@ red = SDL.V4 255 0 0 0
 
 drawText :: SDL.Window -> IO ()
 drawText window = do
-  SDL.showWindow window
-  font <- SDL.Font.load "/home/solomon/Development/haskell/yampa-playground/apps/sdl-text/Gidole-Regular.ttf" 70
+  font <- SDL.Font.load "Gidole-Regular.ttf" 70
   text <- SDL.Font.solid font red "Solid!"
   SDL.Font.free font
   screen <- SDL.getWindowSurface window
