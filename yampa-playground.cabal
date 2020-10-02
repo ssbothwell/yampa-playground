@@ -24,6 +24,7 @@ executable waveforms
   -- other-extensions:
   build-depends:       Yampa
                      , base
+                     , mtl
                      , sdl2
                      , sdl2-ttf
                      --, sdl2-gfx

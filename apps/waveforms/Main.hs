@@ -1,3 +1,4 @@
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -fno-warn-type-defaults #-}
@@ -8,6 +9,7 @@
 module Main where
 
 import Control.Monad
+import Control.Monad.Identity
 import Data.Bifunctor hiding (second)
 import Data.Ratio
 import Data.List (unfoldr)
@@ -64,21 +66,45 @@ trianglewave = proc _ -> do
   phi <- integral -< 2 * pi * freq
   returnA -< amplitude * asin (sin $ phi + phase)
 
-scope :: Scope -> SF (DTime, Double) (Scope, Event [Point V2 CInt])
-scope s@Scope{ amplitudeBase, timeBase } =
-  constant s &&&
-  (scaleX *** scaleY >>> invert >>> bias >>> modulo >>> sampleWindow samples interval >>> toFloor >>> toPoints)
+zeroCrossing' :: ScopeState -> SF Double Bool
+zeroCrossing' s = arr (floor . signum) >>> sscan f False
   where
-    samples :: Int
-    samples = 1000
+    f :: Bool -> Int -> Bool
+    f True n = n <= 0
+    f False n = n > 0
 
-    interval = fromIntegral timeBase / fromIntegral samples
+zeroCrossing :: ScopeState -> SF Double (Event [Event (ZeroCrossing CInt)])
+zeroCrossing ScopeState{timeBase, sampleRate} = proc input -> do
+  t <- modulo <<< (* (windowW / fromIntegral timeBase)) ^<< time -< ()
+  e <- edge -< input == 0
+  returnA -< undefined
+  where
+    interval = fromIntegral timeBase / fromIntegral sampleRate
+
+modulo :: SF Double Double
+modulo = arr $ \t -> t - fromIntegral (floor (t / windowW)) * windowW
+
+scope' :: ScopeState -> SF a Double -> SF a (ScopeState, Event [Point V2 CInt], Bool)
+scope' s signal = y &&& x >>^ \((x, y), z) -> (x, y, z)
+  where
+    x = signal          >>> zeroCrossing' s
+    y = time &&& signal >>> sampleSignal s
+
+scope :: ScopeState -> SF a Double -> SF a (ScopeState, Event [Point V2 CInt], Event [Event (ZeroCrossing CInt)])
+scope s signal = proc input -> do
+  zeroEvents      <- zeroCrossing s <<< signal            -< input
+  (s', sigEvents) <- sampleSignal s <<< (time &&& signal) -< input
+  returnA -< (s', sigEvents, zeroEvents)
+
+sampleSignal :: ScopeState -> SF (DTime, Double) (ScopeState, Event [Point V2 CInt])
+sampleSignal s@ScopeState{ amplitudeBase, timeBase, sampleRate } =
+  constant s &&&
+  (scaleX *** scaleY >>> invert >>> bias >>> FRP.Yampa.first modulo >>> sampleWindow sampleRate interval >>> toFloor >>> toPoints)
+  where
+    interval = fromIntegral timeBase / fromIntegral sampleRate
 
     bias :: SF (Double, Double) (Double, Double)
     bias = second $ arr (+ (windowH / 2))
-
-    modulo :: SF (Double, Double) (Double, Double)
-    modulo = FRP.Yampa.first $ arr $ \t -> t - fromIntegral (floor (t / windowW)) * windowW
 
     scaleX :: SF Double Double
     scaleX = arr (* (windowW / fromIntegral timeBase))
@@ -168,6 +194,7 @@ red = SDL.V4 255 0 0 0
 
 type Size = Int
 type Position = (Int, Int)
+
 drawText :: Renderer -> Size -> Position -> Text -> IO ()
 drawText r size (xpos, ypos) t = do
   font <- SDL.Font.load "Anonymous.ttf" 70
@@ -230,8 +257,8 @@ drawSignal r pts =
         else SDL.drawLine r a b
   in mapM_ f $ pair pts
 
-drawLines :: (Window, Renderer) -> Scope -> [Point V2 CInt] -> IO ()
-drawLines (w, r) Scope{ amplitudeBase, amplitudeInterval, timeBase, timeInterval } points = do
+draw :: (Window, Renderer) -> ScopeState -> [Point V2 CInt] -> IO ()
+draw (w, r) ScopeState{ amplitudeBase, amplitudeInterval, timeBase, timeInterval } points = do
   clearFrame r
   drawTimeDivisons r timeBase timeInterval
   drawAmplitudeDivisions r amplitudeBase amplitudeInterval
@@ -239,6 +266,7 @@ drawLines (w, r) Scope{ amplitudeBase, amplitudeInterval, timeBase, timeInterval
   drawText r 20 (0, 520) $ T.concat ["amp  base: ", (T.pack . show) amplitudeBase, "v"]
   drawText r 20 (0, 560) $ T.concat ["time base: ", (T.pack . show) timeBase, "s"]
   drawSignal r points
+  --SDL.drawLine r (P $ V2 zero 0) (P $ V2 zero windowH)
   SDL.present r
 
 initSDL :: IO (Renderer, Window)
@@ -258,25 +286,31 @@ type AmpInterval  = Double
 type TimeBase     = CInt
 type TimeInterval = Double
 
-data Scope = Scope
+newtype ZeroCrossing a = ZeroCrossing a
+  deriving (Eq, Show)
+  deriving (Functor, Applicative, Monad)
+    via Identity
+
+data ScopeState = ScopeState
   { amplitudeBase     :: AmpBase
   , amplitudeInterval :: AmpInterval
   , timeBase          :: TimeBase
   , timeInterval      :: TimeInterval
   , positivePeak      :: Maybe Double
   , negativePeak      :: Maybe Double
+  , sampleRate        :: Int
   }
 
-scopeConfig :: Scope
-scopeConfig = Scope
+scopeConfig :: ScopeState
+scopeConfig = ScopeState
   { amplitudeBase = 4
   , amplitudeInterval = 0.1
-  , timeBase = 4
-  , timeInterval = 0.1
+  , timeBase = 10
+  , timeInterval = 1
   , positivePeak = Nothing
   , negativePeak = Nothing
+  , sampleRate   = 1000
   }
-
 
 main :: IO ()
 main = do
@@ -294,11 +328,12 @@ main = do
           Just e -> return (sampleRate, Just . Event $ SDL.eventPayload e)
           Nothing -> return (sampleRate, Nothing)
 
-      handleOutput :: (Window, Renderer) -> Bool -> ((Scope, Event [Point V2 CInt]), Bool) -> IO Bool
-      handleOutput (w, r) _ ((s, e), exitBool) =
+      handleOutput :: (Window, Renderer) -> Bool -> ((ScopeState, Event [Point V2 CInt], Bool), Bool) -> IO Bool
+      handleOutput (w, r) _ ((s, e, z), exitBool) =
         case e of
-          Event pts -> drawLines (w, r) s pts >> pure exitBool
+          Event pts -> print z >> draw (w, r) s pts >> pure exitBool
           NoEvent -> pure exitBool
 
-      pipeline :: SF (Event SDL.EventPayload) ((Scope, Event [Point V2 CInt]), Bool)
-      pipeline = parseSDLInput >>> ((time &&& sinewave) >>> scope scopeConfig) &&& shouldExit
+      pipeline :: SF (Event SDL.EventPayload) ((ScopeState, Event [Point V2 CInt], Bool), Bool)
+      --pipeline = parseSDLInput >>> ((time &&& sinewave) >>> sampleSignal scopeConfig) &&& shouldExit
+      pipeline = parseSDLInput >>> scope' scopeConfig sinewave &&& shouldExit
